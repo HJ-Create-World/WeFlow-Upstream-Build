@@ -1,5 +1,9 @@
 # WeFlow Upstream Build（最新源码社区构建版）
 
+
+https://github.com/user-attachments/assets/0decaa26-aa61-4819-9eba-9b3a536c453b
+
+
 > 本仓库是 [hicccc77/WeFlow](https://github.com/hicccc77/WeFlow)（上游）**main 分支最新代码**的社区构建与修复版。
 > **配套稳定版仓库**：[WeFlow-Community-Build](https://github.com/HJ-Create-World/WeFlow-Community-Build)（5.0.0 基线，验证最充分，**日常使用推荐**）。
 
