@@ -15,13 +15,18 @@ export function getLastDllInitError(): string | null {
 function cleanAccountDirName(dirName: string): string {
   const trimmed = dirName.trim()
   if (!trimmed) return trimmed
-  if (trimmed.toLowerCase().startsWith('accountId_')) {
+  if (trimmed.toLowerCase().startsWith('accountid_')) {
     const match = trimmed.match(/^(accountId_[^_]+)/i)
     if (match) return match[1]
     return trimmed
   }
   const suffixMatch = trimmed.match(/^(.+)_([a-zA-Z0-9]{4})$/)
-  if (suffixMatch) return suffixMatch[1]
+  if (suffixMatch) {
+    // wxid_ 前缀的完整账号 ID（微信 4.0 数据目录名即完整 wxid，尾部 _xxxx 是 ID 本体的一部分）不剥离，
+    // 否则 wcdb_set_my_account_id 收到残缺 ID，消息 isSend 判定全部失败（导出 HTML 所有消息渲染在同一侧）
+    if (/^wxid_/i.test(trimmed)) return trimmed
+    return suffixMatch[1]
+  }
   return trimmed
 }
 
@@ -2148,6 +2153,17 @@ export class WcdbCore {
       const jsonStr = this.decodeJsonPtr(outPtr[0])
       if (!jsonStr) return { success: false, error: '解析消息失败' }
       const messages = this.parseMessageJson(jsonStr)
+      // 组件返回的原始行不含 is_send 标记：用 sender_username 对比本机账号组装。
+      // 注意：DB 里自己发送的消息 sender_username 是账号本体 ID（无设备后缀），
+      // 而 currentAccountId 可能是带 _xxxx 后缀的完整 ID，两种形态都要匹配。
+      const myIdForMessages = String(this.currentAccountId || '').trim()
+      const myIdBase = myIdForMessages.replace(/_[a-zA-Z0-9]+$/, '')
+      if (myIdForMessages && Array.isArray(messages)) {
+        for (const m of messages) {
+          const sender = String(m?.sender_username || '').trim()
+          m.isSend = sender && (sender === myIdForMessages || (myIdBase && sender === myIdBase)) ? 1 : 0
+        }
+      }
       return { success: true, messages }
     } catch (e) {
       return { success: false, error: String(e) }
@@ -3010,7 +3026,16 @@ export class WcdbCore {
           createTime: toInt(row.create_time ?? row.createTime),
           localType,
           senderUsername: pickString(row, ['sender_username', 'senderUsername', 'real_sender_id', 'realSenderId']) || undefined,
-          isSend: row.is_send === null || row.is_send === undefined ? null : toInt(row.is_send),
+          isSend: (row.is_send === null || row.is_send === undefined)
+            ? (() => {
+                // 组件返回的原始行不含 is_send：发言人账号对比本机账号组装。
+                // DB 里自己发送的消息 sender_username 是账号本体 ID（无设备后缀），完整/剥离两种形态都匹配。
+                const senderResolved = String(pickString(row, ['sender_username', 'senderUsername']) || '').trim()
+                const myId = String(this.currentAccountId || '').trim()
+                const myIdBase = myId.replace(/_[a-zA-Z0-9]+$/, '')
+                return senderResolved && (senderResolved === myId || (myIdBase && senderResolved === myIdBase)) ? 1 : 0
+              })()
+            : toInt(row.is_send),
           imageMd5,
           imageDatName,
           videoMd5,
@@ -4123,6 +4148,16 @@ export class WcdbCore {
       const jsonStr = this.decodeJsonPtr(outPtr[0])
       if (!jsonStr) return { success: false, error: '解析批次失败' }
       const rows = this.parseMessageJson(jsonStr)
+      // 组件返回的原始行不含 is_send：用 sender_username 对比本机账号组装（HTML 导出的游标链在此取数据）。
+      // 注意：DB 里自己发送的消息 sender_username 是账号本体 ID（无设备后缀），完整/剥离两种形态都要匹配。
+      const myIdForCursor = String(this.currentAccountId || '').trim()
+      const myIdBaseForCursor = myIdForCursor.replace(/_[a-zA-Z0-9]+$/, '')
+      if (myIdForCursor && Array.isArray(rows)) {
+        for (const row of rows) {
+          const sender = String(row?.sender_username || '').trim()
+          row.is_send = sender && (sender === myIdForCursor || (myIdBaseForCursor && sender === myIdBaseForCursor)) ? 1 : 0
+        }
+      }
       return { success: true, rows, hasMore: outHasMore[0] === 1 }
     } catch (e) {
       return { success: false, error: String(e) }
