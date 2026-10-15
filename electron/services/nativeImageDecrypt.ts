@@ -87,8 +87,9 @@ function loadAddon(): NativeAddon | null {
         cachedAddon = addon
         return addon
       }
-    } catch {
-      // try next candidate
+    } catch (e) {
+      // try next candidate（记录真实加载错误，便于定位 ABI/依赖问题）
+      console.error('[nativeImageDecrypt] addon require failed:', candidate, String(e).slice(0, 300))
     }
   }
 

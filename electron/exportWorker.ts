@@ -310,6 +310,112 @@ const recordNewDirectoryTreeEntries = (before: DirectoryTreeSnapshot) => {
   }
 }
 
+const collectWeliveErrorText = (result: any): string => {
+  const parts = [
+    result?.error,
+    result?.stderr,
+    ...Object.values(result?.failedSessionErrors || {})
+  ]
+  return parts
+    .map((value) => String(value || '').trim())
+    .filter(Boolean)
+    .join('\n')
+}
+
+type WeliveFallbackReason = 'build-expired' | 'native-transport' | 'native-crash' | 'engine-missing'
+
+const getWeliveFallbackReason = (result: any): WeliveFallbackReason | null => {
+  if (!result || result.success) return null
+  const text = collectWeliveErrorText(result)
+  if (/this build has expired/i.test(text)) return 'build-expired'
+  if (/native transport challenge failed|server proof mismatch|finish failed with status|finish proof mismatch/i.test(text)) {
+    return 'native-transport'
+  }
+  if (/3221225477|0x?c0000005|-1073741819/i.test(text)) return 'native-crash'
+  if (/未找到 WeLive 导出引擎|\bENOENT\b/i.test(text)) return 'engine-missing'
+  return null
+}
+
+const getWeliveFallbackLabel = (reason: WeliveFallbackReason): string => {
+  if (reason === 'build-expired') return 'WeLive 导出引擎已过期，正在切换兼容导出引擎'
+  if (reason === 'native-transport') return 'WeLive 导出引擎与当前环境不兼容，正在切换兼容导出引擎'
+  if (reason === 'engine-missing') return '未找到 WeLive 导出引擎，正在切换兼容导出引擎'
+  return 'WeLive 导出引擎异常退出，正在切换兼容导出引擎'
+}
+
+async function runLegacyEngine() {
+  const path = require('path') as typeof import('path')
+  const { wcdbService } = await import('./services/wcdbService')
+  const { exportService } = await import('./services/export')
+
+  wcdbService.setPaths(String(config.resourcesPath || ''), String(config.userDataPath || ''))
+  wcdbService.setLibPath(String(config.wcdbLibPath || ''))
+  wcdbService.setLogEnabled(config.logEnabled === true)
+  exportService.setRuntimeConfig({
+    dbPath: config.dbPath,
+    decryptKey: config.decryptKey,
+    myAccountId: config.myAccountId,
+    accountDir: config.accountDir,
+    imageXorKey: config.imageXorKey,
+    imageAesKey: config.imageAesKey,
+    resourcesPath: config.resourcesPath,
+    appPath: config.resourcesPath ? path.dirname(config.resourcesPath) : __dirname,
+    isPackaged: config.isPackaged
+  })
+
+  const onProgress = (progress: any) => queueProgress(progress)
+
+  const taskControl = config.taskId
+    ? {
+        shouldPause: () => controlState.pauseRequested,
+        shouldStop: () => controlState.stopRequested,
+        recordCreatedFile: queueCreatedFile,
+        recordCreatedDir: queueCreatedDir
+      }
+    : undefined
+
+  let result: any
+  if (config.mode === 'single') {
+    const sessionId = String(config.sessionId || '').trim()
+    const outputPath = String(config.outputPath || '').trim()
+    const options = config.options || { format: 'chatlab' }
+    const format = String(options.format || 'chatlab')
+    if (format === 'json' || format === 'arkme-json') {
+      result = await exportService.orchestrator.exportSessionToDetailedJson(sessionId, outputPath, options, onProgress, taskControl)
+    } else if (format === 'excel') {
+      result = await exportService.orchestrator.exportSessionToExcel(sessionId, outputPath, options, onProgress, taskControl)
+    } else if (format === 'txt') {
+      result = await exportService.orchestrator.exportSessionToTxt(sessionId, outputPath, options, onProgress, taskControl)
+    } else if (format === 'markdown') {
+      result = await exportService.orchestrator.exportSessionToMarkdown(sessionId, outputPath, options, onProgress, taskControl)
+    } else if (format === 'weclone') {
+      result = await exportService.orchestrator.exportSessionToWeCloneCsv(sessionId, outputPath, options, onProgress, taskControl)
+    } else if (format === 'html') {
+      result = await exportService.orchestrator.exportSessionToHtml(sessionId, outputPath, options, onProgress, taskControl)
+    } else if (format === 'sql') {
+      result = await exportService.orchestrator.exportSessionToSql(sessionId, outputPath, options, onProgress, taskControl)
+    } else {
+      result = await exportService.orchestrator.exportSessionToChatLab(sessionId, outputPath, options, onProgress, taskControl)
+    }
+  } else {
+    result = await exportService.exportSessions(
+      Array.isArray(config.sessionIds) ? config.sessionIds : [],
+      String(config.outputDir || ''),
+      config.options || { format: 'json' },
+      onProgress,
+      taskControl
+    )
+  }
+
+  flushProgress()
+  flushCreatedPaths()
+
+  parentPort?.postMessage({
+    type: 'export:result',
+    data: result
+  })
+}
+
 async function runWeliveEngine() {
   const path = require('path') as typeof import('path')
   const fs = require('fs') as typeof import('fs')
@@ -707,12 +813,27 @@ async function run() {
   }
 
   const result = await runWeliveEngine()
+  const fallbackReason = getWeliveFallbackReason(result)
+  if (!fallbackReason) {
+    flushProgress()
+    flushCreatedPaths()
+    parentPort?.postMessage({
+      type: 'export:result',
+      data: result
+    })
+    return
+  }
+
+  queueProgress({
+    current: 0,
+    total: config.mode === 'single' ? 1 : (Array.isArray(config.sessionIds) ? config.sessionIds.length : 1),
+    phase: 'preparing',
+    phaseLabel: getWeliveFallbackLabel(fallbackReason)
+  })
   flushProgress()
   flushCreatedPaths()
-  parentPort?.postMessage({
-    type: 'export:result',
-    data: result
-  })
+
+  await runLegacyEngine()
 }
 
 run().catch((error) => {

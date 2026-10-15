@@ -2210,6 +2210,10 @@ export class ImageDecryptService {
       const encrypted = await readFile(datPath)
       const directExt = this.detectImageExtension(encrypted)
       if (directExt) return { data: encrypted, ext: directExt, isWxgf: false }
+      // WXGF 明文容器（微信 4.0 新格式）直接识别，交给 unwrapWxgf 的 HEVC/ffmpeg 流程
+      if (encrypted.length > 20 && encrypted[0] === 0x77 && encrypted[1] === 0x78 && encrypted[2] === 0x67 && encrypted[3] === 0x66) {
+        return { data: encrypted, ext: '', isWxgf: true }
+      }
 
       const candidates: Buffer[] = []
       const aesKeyText = String(aesKey || '').trim()
@@ -2226,6 +2230,10 @@ export class ImageDecryptService {
       for (const candidate of candidates) {
         const ext = this.detectImageExtension(candidate)
         if (ext) return { data: candidate, ext, isWxgf: false }
+        // WXGF 容器（微信 4.0 新格式）：返回 isWxgf=true，由主流程 unwrapWxgf 走 HEVC/ffmpeg 转换
+        if (candidate.length > 20 && candidate[0] === 0x77 && candidate[1] === 0x78 && candidate[2] === 0x67 && candidate[3] === 0x66) {
+          return { data: candidate, ext: '', isWxgf: true }
+        }
       }
     } catch (error) {
       this.logError('JS DAT 解密 fallback 失败', error, { datPath })
