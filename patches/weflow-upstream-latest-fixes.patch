@@ -1,3 +1,757 @@
+diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml
+deleted file mode 100644
+index c7392a3..0000000
+--- a/.github/workflows/release.yml
++++ /dev/null
+@@ -1,375 +0,0 @@
+-name: Build and Release
+-
+-on:
+-  push:
+-    tags:
+-      - "v*"
+-
+-permissions:
+-  contents: write
+-
+-env:
+-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+-  ELECTRON_BUILDER_BINARIES_MIRROR: https://github.com/electron-userland/electron-builder-binaries/releases/download/
+-
+-jobs:
+-  prepare-release:
+-    runs-on: ubuntu-latest
+-
+-    steps:
+-      - name: Prepare GitHub release
+-        env:
+-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+-        shell: bash
+-        run: |
+-          set -euo pipefail
+-          TAG=${GITHUB_REF_NAME}
+-          REPO=${{ github.repository }}
+-          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+-            echo "Release $TAG already exists."
+-          else
+-            gh release create "$TAG" --repo "$REPO" --title "${TAG#v}" --notes "Release $TAG" --target "$GITHUB_SHA"
+-          fi
+-
+-  release-mac-arm64:
+-    runs-on: macos-14
+-    needs: prepare-release
+-
+-    steps:
+-      - name: Check out git repository
+-        uses: actions/checkout@v5
+-        with:
+-          fetch-depth: 0
+-
+-      - name: Install Node.js
+-        uses: actions/setup-node@v5
+-        with:
+-          node-version: 24
+-          cache: "npm"
+-      - name: Install Dependencies
+-        run: npm install --ignore-scripts
+-
+-      - name: Sync version with tag
+-        shell: bash
+-        run: |
+-          VERSION=${GITHUB_REF_NAME#v}
+-          echo "Syncing package.json version to $VERSION"
+-          node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));p.version='$VERSION';fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')"
+-
+-      - name: Build Frontend & Type Check
+-        shell: bash
+-        run: |
+-          npx tsc
+-          npx vite build
+-
+-      - name: Package and Publish macOS arm64 (unsigned DMG + ZIP)
+-        env:
+-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+-          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+-        shell: bash
+-        run: |
+-          set -euo pipefail
+-          export ELECTRON_BUILDER_BINARIES_MIRROR="https://github.com/electron-userland/electron-builder-binaries/releases/download/"
+-          echo "Using ELECTRON_BUILDER_BINARIES_MIRROR=$ELECTRON_BUILDER_BINARIES_MIRROR"
+-          if ! npx electron-builder --mac dmg zip --arm64 --publish never '--config.npmRebuild=false'; then
+-            echo "::warning::DMG packaging failed (hdiutil instability on runner). Retrying with ZIP only."
+-            npx electron-builder --mac zip --arm64 --publish never '--config.npmRebuild=false'
+-          fi
+-
+-      - name: Inject minimumVersion into latest yml
+-        env:
+-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+-        shell: bash
+-        run: |
+-          set -euo pipefail
+-          source .github/scripts/release-utils.sh
+-          TAG=${GITHUB_REF_NAME}
+-          REPO=${{ github.repository }}
+-          MINIMUM_VERSION="4.1.7"
+-          wait_for_release_id "$REPO" "$TAG" 12 2 >/dev/null
+-          upload_generated_release_files "$REPO" "$TAG"
+-          upload_generated_update_ymls "$REPO" "$TAG" "$MINIMUM_VERSION" latest-mac.yml latest-arm64-mac.yml
+-
+-  release-linux:
+-    runs-on: ubuntu-latest
+-    needs: prepare-release
+-
+-    steps:
+-      - name: Check out git repository
+-        uses: actions/checkout@v5
+-        with:
+-          fetch-depth: 0
+-
+-      - name: Install Node.js
+-        uses: actions/setup-node@v5
+-        with:
+-          node-version: 24
+-          cache: "npm"
+-      - name: Install Dependencies
+-        run: npm install
+-
+-      - name: Sync version with tag
+-        shell: bash
+-        run: |
+-          VERSION=${GITHUB_REF_NAME#v}
+-          echo "Syncing package.json version to $VERSION"
+-          node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));p.version='$VERSION';fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')"
+-
+-      - name: Build Frontend & Type Check
+-        shell: bash
+-        run: |
+-          npx tsc
+-          npx vite build
+-
+-      - name: Package and Publish Linux
+-        env:
+-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+-        run: |
+-          npx electron-builder --linux --publish never
+-
+-      - name: Inject minimumVersion into latest yml
+-        env:
+-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+-        shell: bash
+-        run: |
+-          set -euo pipefail
+-          source .github/scripts/release-utils.sh
+-          TAG=${GITHUB_REF_NAME}
+-          REPO=${{ github.repository }}
+-          MINIMUM_VERSION="4.1.7"
+-          wait_for_release_id "$REPO" "$TAG" 12 2 >/dev/null
+-          upload_generated_release_files "$REPO" "$TAG"
+-          upload_generated_update_ymls "$REPO" "$TAG" "$MINIMUM_VERSION" latest-linux.yml
+-
+-  release:
+-    runs-on: windows-latest
+-    needs: prepare-release
+-
+-    steps:
+-      - name: Check out git repository
+-        uses: actions/checkout@v5
+-        with:
+-          fetch-depth: 0
+-
+-      - name: Install Node.js
+-        uses: actions/setup-node@v5
+-        with:
+-          node-version: 24
+-          cache: 'npm'
+-      - name: Install Dependencies
+-        run: npm install
+-
+-      - name: Sync version with tag
+-        shell: bash
+-        run: |
+-          VERSION=${GITHUB_REF_NAME#v}
+-          echo "Syncing package.json version to $VERSION"
+-          node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));p.version='$VERSION';fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')"
+-
+-      - name: Build Frontend & Type Check
+-        shell: bash
+-        run: |
+-          npx tsc
+-          npx vite build
+-
+-      - name: Package and Publish
+-        env:
+-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+-        run: |
+-          npx electron-builder --win nsis --x64 --publish never '--config.artifactName=${productName}-${version}-x64-Setup.${ext}'
+-
+-      - name: Inject minimumVersion into latest yml
+-        env:
+-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+-        shell: bash
+-        run: |
+-          set -euo pipefail
+-          source .github/scripts/release-utils.sh
+-          TAG=${GITHUB_REF_NAME}
+-          REPO=${{ github.repository }}
+-          MINIMUM_VERSION="4.1.7"
+-          wait_for_release_id "$REPO" "$TAG" 12 2 >/dev/null
+-          upload_generated_release_files "$REPO" "$TAG"
+-          upload_generated_update_ymls "$REPO" "$TAG" "$MINIMUM_VERSION" latest.yml
+-
+-  release-windows-arm64:
+-    runs-on: windows-latest
+-    needs: prepare-release
+-
+-    steps:
+-      - name: Check out git repository
+-        uses: actions/checkout@v5
+-        with:
+-          fetch-depth: 0
+-
+-      - name: Install Node.js
+-        uses: actions/setup-node@v5
+-        with:
+-          node-version: 24
+-          cache: 'npm'
+-      - name: Install Dependencies
+-        run: npm install
+-
+-      - name: Sync version with tag
+-        shell: bash
+-        run: |
+-          VERSION=${GITHUB_REF_NAME#v}
+-          echo "Syncing package.json version to $VERSION"
+-          node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));p.version='$VERSION';fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')"
+-
+-      - name: Build Frontend & Type Check
+-        shell: bash
+-        run: |
+-          npx tsc
+-          npx vite build
+-
+-      - name: Package and Publish Windows arm64
+-        env:
+-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+-        run: |
+-          npx electron-builder --win nsis --arm64 --publish never '--config.publish.channel=latest-arm64' '--config.artifactName=${productName}-${version}-arm64-Setup.${ext}'
+-
+-      - name: Inject minimumVersion into latest yml
+-        env:
+-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+-        shell: bash
+-        run: |
+-          set -euo pipefail
+-          source .github/scripts/release-utils.sh
+-          TAG=${GITHUB_REF_NAME}
+-          REPO=${{ github.repository }}
+-          MINIMUM_VERSION="4.1.7"
+-          wait_for_release_id "$REPO" "$TAG" 12 2 >/dev/null
+-          upload_generated_release_files "$REPO" "$TAG"
+-          upload_generated_update_ymls "$REPO" "$TAG" "$MINIMUM_VERSION" latest-arm64.yml
+-
+-  update-release-notes:
+-    runs-on: ubuntu-latest
+-    needs:
+-      - release-mac-arm64
+-      - release-linux
+-      - release
+-      - release-windows-arm64
+-
+-    steps:
+-      - name: Check out git repository
+-        uses: actions/checkout@v5
+-        with:
+-          fetch-depth: 1
+-
+-      - name: Generate release notes with platform download links
+-        env:
+-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+-        shell: bash
+-        run: |
+-          set -euo pipefail
+-          source .github/scripts/release-utils.sh
+-
+-          TAG="$GITHUB_REF_NAME"
+-          REPO="$GITHUB_REPOSITORY"
+-          RELEASE_PAGE="https://github.com/$REPO/releases/tag/$TAG"
+-          wait_for_release_id "$REPO" "$TAG" 12 2 >/dev/null
+-
+-          capture_cmd_with_retry ASSETS_JSON 8 3 gh release view "$TAG" --repo "$REPO" --json assets
+-
+-          pick_asset() {
+-            local pattern="$1"
+-            echo "$ASSETS_JSON" | jq -r --arg p "$pattern" '[.assets[].name | select(test($p))][0] // ""'
+-          }
+-
+-          WINDOWS_ASSET="$(echo "$ASSETS_JSON" | jq -r '[.assets[].name | select(test("x64.*\\.exe$"))][0] // ""')"
+-          if [ -z "$WINDOWS_ASSET" ]; then
+-            WINDOWS_ASSET="$(echo "$ASSETS_JSON" | jq -r '[.assets[].name | select(test("\\.exe$")) | select(test("arm64") | not)][0] // ""')"
+-          fi
+-          WINDOWS_ARM64_ASSET="$(echo "$ASSETS_JSON" | jq -r '[.assets[].name | select(test("arm64.*\\.exe$"))][0] // ""')"
+-          MAC_ASSET="$(pick_asset "\\.dmg$")"
+-          if [ -z "$MAC_ASSET" ]; then
+-            MAC_ASSET="$(pick_asset "arm64\\.zip$")"
+-          fi
+-          LINUX_TAR_ASSET="$(pick_asset "\\.tar\\.gz$")"
+-          LINUX_APPIMAGE_ASSET="$(pick_asset "\\.AppImage$")"
+-
+-          build_link() {
+-            local name="$1"
+-            if [ -n "$name" ]; then
+-              echo "https://github.com/$REPO/releases/download/$TAG/$name"
+-            fi
+-          }
+-
+-          WINDOWS_URL="$(build_link "$WINDOWS_ASSET")"
+-          WINDOWS_ARM64_URL="$(build_link "$WINDOWS_ARM64_ASSET")"
+-          MAC_URL="$(build_link "$MAC_ASSET")"
+-          LINUX_TAR_URL="$(build_link "$LINUX_TAR_ASSET")"
+-          LINUX_APPIMAGE_URL="$(build_link "$LINUX_APPIMAGE_ASSET")"
+-
+-          cat > release_notes.md <<EOF
+-          ## 更新日志
+-          修复了一些已知问题
+-
+-          ## 查看更多日志/获取最新动态
+-          [点击加入 Telegram 频道](https://t.me/weflow_cc)
+-
+-          ## 下载
+-          - Windows x64（Win10+）: [点击下载](${WINDOWS_URL:-$RELEASE_PAGE})
+-          - Windows arm64: [点击下载](${WINDOWS_ARM64_URL:-$RELEASE_PAGE})
+-          - macOS（M系列芯片）: [点击下载](${MAC_URL:-$RELEASE_PAGE})
+-          - Linux (.tar.gz): [点击下载](${LINUX_TAR_URL:-$RELEASE_PAGE})
+-          - Linux (.AppImage): [点击下载](${LINUX_APPIMAGE_URL:-$RELEASE_PAGE})
+-
+-          ## macOS 安装提示
+-          - 如果被系统提示已损坏，你需要在终端执行以下命令去除隔离标记：
+-          - \`xattr -dr com.apple.quarantine "/Applications/WeFlow.app"\`
+-          - 执行后重新打开 WeFlow。
+-
+-          > 如果某个平台链接暂时未生成，可进入[完整发布页]($RELEASE_PAGE)查看全部资源
+-          EOF
+-
+-          retry_cmd 5 3 gh release edit "$TAG" --repo "$REPO" --notes-file release_notes.md
+-
+-  deploy-aur:
+-    runs-on: ubuntu-latest
+-    needs: [release-linux]
+-    if: startsWith(github.ref, 'refs/tags/v')
+-    steps:
+-      - name: Check AUR credentials
+-        id: aur-credentials
+-        shell: bash
+-        env:
+-          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+-        run: |
+-          if [ -z "${AUR_SSH_PRIVATE_KEY}" ]; then
+-            echo "::notice::AUR_SSH_PRIVATE_KEY is not configured; skipping AUR publish."
+-            echo "enabled=false" >> "$GITHUB_OUTPUT"
+-          else
+-            echo "enabled=true" >> "$GITHUB_OUTPUT"
+-          fi
+-
+-      - name: Checkout code
+-        if: steps.aur-credentials.outputs.enabled == 'true'
+-        uses: actions/checkout@v5
+-        with:
+-          fetch-depth: 0
+-
+-      - name: Update PKGBUILD version
+-        if: steps.aur-credentials.outputs.enabled == 'true'
+-        run: |
+-          NEW_VER=$(echo "${{ github.ref_name }}" | sed 's/^v//')
+-          sed -i "s/^pkgver=.*/pkgver=${NEW_VER}/" resources/installer/linux/PKGBUILD
+-          sed -i "s/^pkgrel=.*/pkgrel=1/" resources/installer/linux/PKGBUILD
+-
+-      - name: Publish AUR package
+-        if: steps.aur-credentials.outputs.enabled == 'true'
+-        uses: KSXGitHub/github-actions-deploy-aur@master
+-        with:
+-          pkgname: weflow
+-          pkgbuild: resources/installer/linux/PKGBUILD
+-          updpkgsums: true
+-          assets: |
+-            resources/installer/linux/weflow.desktop
+-            resources/installer/linux/icon.png
+-            resources/installer/linux/.gitignore
+-
+-          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+-          commit_username: H3CoF6
+-          commit_email: h3cof6@gmail.com
+-          ssh_keyscan_types: ed25519
+diff --git a/.github/workflows/wcdb-compatibility.yml b/.github/workflows/wcdb-compatibility.yml
+deleted file mode 100644
+index f00f7e0..0000000
+--- a/.github/workflows/wcdb-compatibility.yml
++++ /dev/null
+@@ -1,38 +0,0 @@
+-name: WCDB compatibility
+-
+-on:
+-  pull_request:
+-    paths:
+-      - 'electron/services/wcdbCore.ts'
+-      - 'electron/utils/pathUtils.ts'
+-      - 'scripts/check-wcdb-optional-exports.cjs'
+-      - 'package.json'
+-      - 'package-lock.json'
+-      - '.github/workflows/wcdb-compatibility.yml'
+-  push:
+-    paths:
+-      - 'electron/services/wcdbCore.ts'
+-      - 'electron/utils/pathUtils.ts'
+-      - 'scripts/check-wcdb-optional-exports.cjs'
+-      - 'package.json'
+-      - 'package-lock.json'
+-      - '.github/workflows/wcdb-compatibility.yml'
+-
+-permissions:
+-  contents: read
+-
+-jobs:
+-  regression:
+-    strategy:
+-      matrix:
+-        os: [ubuntu-latest, windows-latest]
+-    runs-on: ${{ matrix.os }}
+-    steps:
+-      - uses: actions/checkout@v5
+-      - uses: actions/setup-node@v5
+-        with:
+-          node-version: 24
+-          cache: npm
+-      - run: npm ci --ignore-scripts --legacy-peer-deps --no-audit --no-fund
+-      - run: npm run test:wcdb
+-      - run: npm run typecheck
+diff --git a/README-upstream.md b/README-upstream.md
+new file mode 100644
+index 0000000..21d17cb
+--- /dev/null
++++ b/README-upstream.md
+@@ -0,0 +1,130 @@
++<p align="center">
++  <img src="app.jpg" alt="WeFlow 应用预览" width="90%">
++</p>
++
++<h1 align="center">WeFlow</h1>
++
++<p align="center">
++  WeFlow 是一个<strong>完全本地</strong>的微信<strong>实时</strong>聊天记录查看、分析与导出工具。<br>
++  它可以获取你的微信聊天记录并将其导出，还可以根据你的聊天记录为你生成独一无二的数据与年度报告。
++</p>
++
++> [!WARNING]
++> **本项目代码来源于网络收集，非本人开发，仅作备份与分享。**
++> 
++> 原项目地址：https://github.com/hicccc77/WeFlow
++> 
++> 本仓库版权归原作者所有，请尊重原作者劳动成果。
++
++<p align="center">
++  <a href="https://github.com/mjkyleo/weflow/stargazers"><img src="https://img.shields.io/github/stars/mjkyleo/weflow?style=flat&label=Stars&labelColor=2A3B4C&color=60A5FA" alt="Stargazers"></a>
++  <a href="https://github.com/mjkyleo/weflow/network/members"><img src="https://img.shields.io/github/forks/mjkyleo/weflow?style=flat&label=Forks&labelColor=2A3B4C&color=60A5FA" alt="Forks"></a>
++  <a href="https://github.com/mjkyleo/weflow/releases"><img src="https://img.shields.io/github/downloads/mjkyleo/weflow/total?style=flat&label=Downloads&labelColor=2A3B4C&color=60A5FA" alt="Downloads"></a>
++</p>
++
++> [!TIP]
++> 仅支持微信 **4.0 及以上**版本
++> 
++> 如果导出聊天记录后，想深入分析聊天内容可以试试 [ChatLab](https://chatlab.fun/)
++
++## 主要功能
++
++- 本地实时查看聊天记录
++- 朋友圈图片、视频、**实况**的预览和解密
++- 统计分析与群聊画像
++- 年度报告与可视化概览
++- 导出聊天记录为 HTML 等格式
++- HTTP API 接口（面向开发者）
++- 查看完整能力清单：[详细功能](#详细功能清单)
++
++## 支持平台与设备
++
++| 平台      | 设备/架构                     | 安装包                   |
++| ------- | ------------------------- | --------------------- |
++| Windows | Windows10+、x64            | `.exe`                |
++| macOS   | Apple Silicon（M 系列，arm64） | `.dmg`                |
++| Linux   | x64 设备（amd64）             | `.AppImage`、`.tar.gz` |
++
++## 快速开始
++
++若你只想使用成品版本，可前往 [Releases](https://github.com/mjkyleo/weflow/releases) 下载并安装。
++
++ArchLinux 用户可以选择 `yay -S weflow` 快速安装
++
++## 详细功能清单
++
++| 功能模块            | 说明                                                                 |
++| --------------- | ------------------------------------------------------------------ |
++| **聊天**          | 解密聊天中的图片、视频、实况；支持**修改**本地消息                                        |
++| **消息防撤回**       | 防止其他人发送的消息被撤回                                                      |
++| **实时弹窗通知**      | 新消息到达时提供桌面弹窗提醒，便于及时查看重要会话，提供黑白名单功能                                 |
++| **私聊分析**        | 统计好友间消息数量；分析消息类型与发送比例；查看消息时段分布等                                    |
++| **群聊分析**        | 查看群成员详细信息；分析群内发言排行、活跃时段和媒体内容                                       |
++| **年度报告**        | 生成按年统计的年度报告，或跨年度的长期历史报告                                            |
++| **双人报告**        | 选择指定好友，基于双方聊天记录生成专属分析报告                                            |
++| **消息导出**        | 将微信聊天记录导出为多种格式：JSON、HTML、Markdown、TXT、Excel、CSV、PGSQL、ChatLab专属格式等 |
++| **朋友圈**         | 解密朋友圈图片、视频、实况；导出朋友圈内容；拦截朋友圈的删除与隐藏操作；                               |
++| **联系人**         | 导出微信好友、群聊、公众号信息；找回部分曾经的好友                                          |
++| **HTTP API 映射** | 将本地消息能力映射为 HTTP API，便于对接外部系统、自动化脚本与二次开发                            |
++
++## HTTP API
++
++WeFlow 提供本地 HTTP API 服务，支持通过接口查询消息数据，可用于与其他工具集成或二次开发。
++
++- **启用方式**：设置 → API 服务 → 启动服务
++- **默认端口**：5031
++- **访问地址**：`http://127.0.0.1:5031`
++- **支持格式**：原始 JSON 或 [ChatLab](https://chatlab.fun/) 标准格式
++
++完整接口文档：[点击查看](docs/HTTP-API.md)
++
++## 面向开发者
++
++如果你想从源码构建或为项目贡献代码，请遵循以下步骤：
++
++```bash
++# 1. 克隆项目到本地
++git clone https://github.com/mjkyleo/weflow.git
++cd weflow
++
++# 2. 安装项目依赖
++npm install
++
++# 3. 运行应用（开发模式）
++npm run dev
++```
++
++## 致谢
++
++- [密语 CipherTalk](https://github.com/ILoveBingLu/miyu) 为本项目提供了基础框架
++- [WeChat-Channels-Video-File-Decryption](https://github.com/Evil0ctal/WeChat-Channels-Video-File-Decryption) 提供了视频解密相关的技术参考
++
++## 推广与合作
++
++如果您对 **WeFlow** 有兴趣，或者希望与我们展开深度合作或投放你的广告，欢迎随时通过邮件取得联系。我们非常期待与各位创作者、开发者及合作伙伴共同探索。
++
++### 联系方式
++
++欢迎发送邮件至： 原作者已删除，为保护作者隐私隐藏
++
++## 合作伙伴
++
++我们非常欢迎优秀的开源社区项目团队或其他团队与我们建立长期合作关系。期待与 WeFlow 携手并进，共同建设更开放的生态！
++
++---
++
++## 贡献者
++
++感谢所有做出贡献的开发者！ 原作者已删除，为保护作者隐私隐藏
++
++## Star History
++
++原作者已删除，为保护作者隐私隐藏
++
++<div align="center">
++
++---
++
++**请负责任地使用本工具，遵守相关法律法规**
++
++</div>
+diff --git a/README.md b/README.md
+index 91a187a..56bd9fb 100644
+--- a/README.md
++++ b/README.md
+@@ -1,136 +1,74 @@
+-<p align="center">
+-  <img src="app.jpg" alt="WeFlow 应用预览" width="90%">
+-</p>
++# WeFlow Upstream Build（最新源码社区构建版）
+ 
+-<h1 align="center">WeFlow</h1>
++> 本仓库是 [hicccc77/WeFlow](https://github.com/hicccc77/WeFlow)（上游）**main 分支最新代码**的社区构建与修复版。
++> **配套稳定版仓库**：[WeFlow-Community-Build](https://github.com/HJ-Create-World/WeFlow-Community-Build)（5.0.0 基线，验证最充分，**日常使用推荐**）。
+ 
+-<p align="center">
+-  WeFlow 是一个<strong>完全本地</strong>的<strong>实时</strong>聊天记录查看、分析与导出工具。<br>
+-  它可以获取你的聊天记录并将其导出，还可以根据你的聊天记录为你生成独一无二的数据与年度报告。
+-</p>
++## 两个仓库怎么选
+ 
+-<p align="center">
+-  <a href="https://github.com/hicccc77/WeFlow/stargazers"><img src="https://img.shields.io/github/stars/hicccc77/WeFlow?style=flat&label=Stars&labelColor=2A3B4C&color=60A5FA" alt="Stargazers"></a>
+-  <a href="https://github.com/hicccc77/WeFlow/network/members"><img src="https://img.shields.io/github/forks/hicccc77/WeFlow?style=flat&label=Forks&labelColor=2A3B4C&color=60A5FA" alt="Forks"></a>
+-  <a href="https://github.com/hicccc77/WeFlow/releases"><img src="https://img.shields.io/github/downloads/hicccc77/WeFlow/total?style=flat&label=Downloads&labelColor=2A3B4C&color=60A5FA" alt="Downloads"></a>
+-  <br><br>
+-  <a href="https://t.me/weflow_cc"><img src="https://img.shields.io/badge/Telegram-频道-60A5FA?style=flat&logo=telegram&logoColor=white&labelColor=2A3B4C&color=60A5FA" alt="Telegram Channel" style="height: 24px; vertical-align: middle;"></a>
+-  <a href="https://star-history.com/#hicccc77/WeFlow"><img src="https://api.star-history.com/badge?repo=hicccc77/WeFlow&theme=dark" alt="Star History Rank" style="height: 30px; vertical-align: middle;"></a>
+-</p>
++| | [WeFlow-Community-Build（稳定版）](https://github.com/HJ-Create-World/WeFlow-Community-Build) | 本仓库（最新源码版） |
++|---|---|---|
++| 定位 | **日常使用推荐**，验证最充分 | 上游最新源码，尝鲜 / 体验新功能 |
++| 代码基线 | 5.0.0 完整分发 + Community hotfix | 上游 main 最新 + 本仓库修复（见 [patches/](patches/)） |
++| 图片 | 常规格式 | **新增 WXGF 支持**（微信 4.0 新格式图片） |
++| 导出 | WCDB fallback（补丁式） | WCDB fallback（**源码级移植**） |
++| 上游新功能 | — | AI Agent 子系统、灵感箱、组件外置架构 |
+ 
+-> [!TIP]
+-> 需要配套的第三方可插拔组件（本项目依赖自定义的原生解密组件，需自行设计，见 [docs/third-party-components.md](docs/third-party-components.md)）
++两个版本可并存使用（共用微信数据与配置目录，互不冲突）。**不确定就选稳定版**。
+ 
++## 本仓库相对上游 main 的修复
+ 
+-## 主要功能
++| 修复 | 说明 |
++|------|------|
++| 导出 fallback 源码级移植 | WeLive 导出引擎过期/崩溃/缺失时，自动切换内置 WCDB 导出引擎（识别 4 类失败原因，见 `electron/exportWorker.ts`） |
++| WXGF 图片支持 | 微信 4.0 新格式图片（wxgf 容器）在 JS 兜底解密中正确识别，走 HEVC/ffmpeg 解码（`electron/services/imageDecryptService.ts`） |
++| `cleanAccountDirName` 修复 | `wxid_` 前缀的完整账号 ID 不再被误剥尾部后缀——修复导出 HTML 所有消息渲染在同一侧的问题（上游 bug） |
++| native 加载错误日志 | 图片解密插件加载失败时记录真实错误（此前被静默吞掉） |
+ 
+-- 本地实时查看聊天记录
+-- 朋友圈图片、视频、**实况**的预览和解密
+-- 统计分析与群聊画像
+-- 年度报告与可视化概览
+-- 导出聊天记录为 HTML 等格式
+-- HTTP API 接口（面向开发者）
+-- 查看完整能力清单：[详细功能](#详细功能清单)
++全部修改见 [`patches/weflow-upstream-latest-fixes.patch`](patches/weflow-upstream-latest-fixes.patch)（225 行，可审计）。
+ 
+-## 支持平台与设备
++## 使用要求（组件外置架构）
+ 
+-| 平台 | 设备/架构 | 安装包 |
+-|------|----------|--------|
+-| Windows | Windows10+、x64 | `.exe` |
+-| macOS | Apple Silicon（M 系列，arm64） | `.dmg` |
+-| Linux | x64 设备（amd64） | `.AppImage`、`.tar.gz` |
++上游把解密能力全部改为**可插拔组件**，需要在配置（`%APPDATA%\WeFlow\WeFlow-config.json`，或「设置 → 数据库」界面）指定四个组件路径：
+ 
++| 字段 | 指向 | 说明 |
++|------|------|------|
++| `wcdbLibPath` | `resources\resources\wcdb\win32\x64\wcdb_api.dll`（**需先去时间锁**，见补丁） | 数据库组件 |
++| `welivePath` | `resources\resources\welive\win32\x64\welive.exe` | 导出引擎（**自带过期锁，导出时会自动 fallback 到内置引擎**，无需处理） |
++| `imageNativeAddonPath` | `resources\resources\wedecrypt\win32\x64\weflow-image-native-win32-x64.node` | 图片解密插件 |
++| `keyProviderPath` | 实现 keyProvider 协议（NDJSON）的可执行文件 | 密钥提取；仓库 `patches/` 内附桥接脚本（DPAPI 解密 + Rust CLI 双路） |
+ 
+-## 详细功能清单
++**闭源组件本体**（`resources/` 下的 wcdb/welive/wedecrypt/key 目录）由使用者自行从 5.0.0 完整分发包获取，本仓库不含（见上游 `docs/third-party-components.md` 的接口契约）。
+ 
+-| 功能模块 | 说明 |
+-|---------|------|
+-| **聊天** | 解密聊天中的图片、视频、实况；支持**修改**本地消息 |
+-| **消息防撤回** | 防止其他人发送的消息被撤回 |
+-| **实时弹窗通知** | 新消息到达时提供桌面弹窗提醒，便于及时查看重要会话，提供黑白名单功能 |
+-| **私聊分析** | 统计好友间消息数量；分析消息类型与发送比例；查看消息时段分布等 |
+-| **群聊分析** | 查看群成员详细信息；分析群内发言排行、活跃时段和媒体内容 |
+-| **年度报告** | 生成按年统计的年度报告，或跨年度的长期历史报告 |
+-| **双人报告** | 选择指定好友，基于双方聊天记录生成专属分析报告 |
+-| **消息导出** | 将聊天记录导出为多种格式：JSON、HTML、Markdown、TXT、Excel、CSV、PGSQL、ChatLab专属格式等 |
+-| **朋友圈** | 解密朋友圈图片、视频、实况；导出朋友圈内容；拦截朋友圈的删除与隐藏操作； |
+-| **联系人** | 导出好友、群聊、公众号信息；找回部分曾经的好友 |
+-| **HTTP API 映射** | 将本地消息能力映射为 HTTP API，便于对接外部系统、自动化脚本与二次开发 |
++## 自己构建
+ 
+-## HTTP API
++```powershell
++# 依赖（peer 冲突 + 缺失 peer 需手动补装）
++npm install --legacy-peer-deps
++npm install @lobehub/ui antd --legacy-peer-deps
+ 
+-WeFlow 提供本地 HTTP API 服务，支持通过接口查询消息数据，可用于与其他工具集成或二次开发。
++# 构建（必须带双镜像变量；构建前关闭 WeFlow；产物在 release2\win-unpacked\）
++$env:ELECTRON_MIRROR="https://npmmirror.com/mirrors/electron/"
++$env:ELECTRON_BUILDER_BINARIES_MIRROR="https://npmmirror.com/mirrors/electron-builder-binaries/"
++npm run build
+ 
+-- **启用方式**：设置 → API 服务 → 启动服务
+-- **默认端口**：5031
+-- **访问地址**：`http://127.0.0.1:5031`
+-- **支持格式**：原始 JSON 或 [ChatLab](https://chatlab.fun/) 标准格式
+-
+-完整接口文档：[点击查看](docs/HTTP-API.md)
+-
+-## 面向开发者
+-
+-如果你想从源码构建或为项目贡献代码，请遵循以下步骤：
+-
+-```bash
+-# 1. 克隆项目到本地
+-git clone https://github.com/hicccc77/WeFlow.git
+-cd WeFlow
+-
+-# 2. 安装项目依赖
+-npm install
+-
+-# 3. 运行应用（开发模式）
+-npm run dev
++# 构建后必跑两个补丁
++powershell -File .\patches\patch_wcdb.ps1 -AppDir "<本目录>\release2\win-unpacked"      # wcdb_api.dll 去时间锁
++node .\patches\patch-app-asar.cjs "<本目录>\release2\win-unpacked\resources"           # app.asar keyProvider 支持
+ ```
+ 
+-## 推广与合作
+-
+-如果您对 **WeFlow** 有兴趣，或者希望与我们展开深度合作或投放你的广告，欢迎随时通过邮件取得联系。我们非常期待与各位创作者、开发者及合作伙伴共同探索。
+-
+-### 联系方式
+-
+-欢迎发送邮件至：
+-
+-<a href="mailto:yccccccy@proton.me"><img src="https://img.shields.io/badge/Email-yccccccy%40proton.me-60A5FA?style=flat-square&logo=proton&logoColor=white&labelColor=2A3B4C" alt="Protonmail" height="24px"></a>
+-
+-## 合作伙伴
+-
+-我们非常欢迎优秀的开源社区项目团队或其他团队与我们建立长期合作关系。期待与 WeFlow 携手并进，共同建设更开放的生态！
+-
+-<p align="center">
+-  <!-- 是的你没看错这里还是占位！
+-  <a href="https://your-partner-website.com" target="_blank">
+-    <img src="https://via.placeholder.com/150x50?text=Partner+1+Logo" alt="Partner Name" width="150" style="margin: 10px; vertical-align: middle;" />
+-  </a> -->
+-</p>
+-
+----
+-
+-## 贡献者
+-
+-感谢所有做出贡献的开发者！
+-
+-<p align="center">
+-  <a href="https://github.com/hicccc77/WeFlow/graphs/contributors">
+-    <img src="https://contrib.rocks/image?repo=hicccc77/WeFlow" alt="Contributors" />
+-  </a>
+-</p>
+-
+-## Star History
++上游原版 README 见 [README-upstream.md](README-upstream.md)。
+ 
+-<a href="https://www.star-history.com/#hicccc77/WeFlow&type=date&legend=top-left">
+-  <picture>
+-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=hicccc77/WeFlow&type=date&theme=dark&legend=top-left" />
+-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=hicccc77/WeFlow&type=date&legend=top-left" />
+-    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=hicccc77/WeFlow&type=date&legend=top-left" />
+-  </picture>
+-</a>
++## 已知事项
+ 
+-<div align="center">
++- **视频按需下载**：微信 4.0 只在本地保存已播放过的视频（未播放的仅有封面），WeFlow 无法查看磁盘上不存在的视频本体
++- 上游版本号未变（5.0.0），实际代码以上游 main 分支为准
++- `cleanAccountDirName` 修复仅对 `wxid_` 前缀豁免，其他账号目录命名格式如有问题欢迎反馈
++- 上游闭源组件带遥测（`api.weflow.top`），介意可加防火墙出站拦截
+ 
+----
++## 致谢
+ 
+-**请负责任地使用本工具，遵守相关法律法规**
++- [hicccc77/WeFlow](https://github.com/hicccc77/WeFlow) —— 原作者
++- [334456777/WeFlow](https://github.com/334456777/WeFlow) —— Rust CLI（密钥提取双路之一）
++- [HJ-Create-World/WeFlow-Community-Build](https://github.com/HJ-Create-World/WeFlow-Community-Build) —— 稳定版兄弟仓库
+ 
+-</div>
++**仅限个人学习与数据自用，请勿用于任何违法用途；组件版权归原权利方所有。**
 diff --git a/electron/exportWorker.ts b/electron/exportWorker.ts
 index 8e74eb7..0baad5f 100644
 --- a/electron/exportWorker.ts
@@ -189,6 +943,84 @@ index 1299968..3f8fd3a 100644
      }
    }
  
+diff --git a/electron/services/wcdbCore.ts b/electron/services/wcdbCore.ts
+index 640fac1..50c1680 100644
+--- a/electron/services/wcdbCore.ts
++++ b/electron/services/wcdbCore.ts
+@@ -15,13 +15,18 @@ export function getLastDllInitError(): string | null {
+ function cleanAccountDirName(dirName: string): string {
+   const trimmed = dirName.trim()
+   if (!trimmed) return trimmed
+-  if (trimmed.toLowerCase().startsWith('accountId_')) {
++  if (trimmed.toLowerCase().startsWith('accountid_')) {
+     const match = trimmed.match(/^(accountId_[^_]+)/i)
+     if (match) return match[1]
+     return trimmed
+   }
+   const suffixMatch = trimmed.match(/^(.+)_([a-zA-Z0-9]{4})$/)
+-  if (suffixMatch) return suffixMatch[1]
++  if (suffixMatch) {
++    // wxid_ 前缀的完整账号 ID（微信 4.0 数据目录名即完整 wxid，尾部 _xxxx 是 ID 本体的一部分）不剥离，
++    // 否则 wcdb_set_my_account_id 收到残缺 ID，消息 isSend 判定全部失败（导出 HTML 所有消息渲染在同一侧）
++    if (/^wxid_/i.test(trimmed)) return trimmed
++    return suffixMatch[1]
++  }
+   return trimmed
+ }
+ 
+@@ -2148,6 +2153,17 @@ export class WcdbCore {
+       const jsonStr = this.decodeJsonPtr(outPtr[0])
+       if (!jsonStr) return { success: false, error: '解析消息失败' }
+       const messages = this.parseMessageJson(jsonStr)
++      // 组件返回的原始行不含 is_send 标记：用 sender_username 对比本机账号组装。
++      // 注意：DB 里自己发送的消息 sender_username 是账号本体 ID（无设备后缀），
++      // 而 currentAccountId 可能是带 _xxxx 后缀的完整 ID，两种形态都要匹配。
++      const myIdForMessages = String(this.currentAccountId || '').trim()
++      const myIdBase = myIdForMessages.replace(/_[a-zA-Z0-9]+$/, '')
++      if (myIdForMessages && Array.isArray(messages)) {
++        for (const m of messages) {
++          const sender = String(m?.sender_username || '').trim()
++          m.isSend = sender && (sender === myIdForMessages || (myIdBase && sender === myIdBase)) ? 1 : 0
++        }
++      }
+       return { success: true, messages }
+     } catch (e) {
+       return { success: false, error: String(e) }
+@@ -3010,7 +3026,16 @@ export class WcdbCore {
+           createTime: toInt(row.create_time ?? row.createTime),
+           localType,
+           senderUsername: pickString(row, ['sender_username', 'senderUsername', 'real_sender_id', 'realSenderId']) || undefined,
+-          isSend: row.is_send === null || row.is_send === undefined ? null : toInt(row.is_send),
++          isSend: (row.is_send === null || row.is_send === undefined)
++            ? (() => {
++                // 组件返回的原始行不含 is_send：发言人账号对比本机账号组装。
++                // DB 里自己发送的消息 sender_username 是账号本体 ID（无设备后缀），完整/剥离两种形态都匹配。
++                const senderResolved = String(pickString(row, ['sender_username', 'senderUsername']) || '').trim()
++                const myId = String(this.currentAccountId || '').trim()
++                const myIdBase = myId.replace(/_[a-zA-Z0-9]+$/, '')
++                return senderResolved && (senderResolved === myId || (myIdBase && senderResolved === myIdBase)) ? 1 : 0
++              })()
++            : toInt(row.is_send),
+           imageMd5,
+           imageDatName,
+           videoMd5,
+@@ -4123,6 +4148,16 @@ export class WcdbCore {
+       const jsonStr = this.decodeJsonPtr(outPtr[0])
+       if (!jsonStr) return { success: false, error: '解析批次失败' }
+       const rows = this.parseMessageJson(jsonStr)
++      // 组件返回的原始行不含 is_send：用 sender_username 对比本机账号组装（HTML 导出的游标链在此取数据）。
++      // 注意：DB 里自己发送的消息 sender_username 是账号本体 ID（无设备后缀），完整/剥离两种形态都要匹配。
++      const myIdForCursor = String(this.currentAccountId || '').trim()
++      const myIdBaseForCursor = myIdForCursor.replace(/_[a-zA-Z0-9]+$/, '')
++      if (myIdForCursor && Array.isArray(rows)) {
++        for (const row of rows) {
++          const sender = String(row?.sender_username || '').trim()
++          row.is_send = sender && (sender === myIdForCursor || (myIdBaseForCursor && sender === myIdBaseForCursor)) ? 1 : 0
++        }
++      }
+       return { success: true, rows, hasMore: outHasMore[0] === 1 }
+     } catch (e) {
+       return { success: false, error: String(e) }
 diff --git a/package.json b/package.json
 index a53205d..1843900 100644
 --- a/package.json
@@ -223,3 +1055,598 @@ index a53205d..1843900 100644
 -}
 +}
 \ No newline at end of file
+diff --git a/patches/patch-app-asar.cjs b/patches/patch-app-asar.cjs
+new file mode 100644
+index 0000000..b589fd2
+--- /dev/null
++++ b/patches/patch-app-asar.cjs
+@@ -0,0 +1,42 @@
++// patch-app-asar.cjs: 对 WeFlow 产物（win-unpacked）的 app.asar 打 keyProvider 补丁
++// 用法: node patch-app-asar.cjs <resources 目录>
++// 效果: app.asar 解包为 app/ 目录（asar 改名 .bak），main.js 的 keyProviderService
++//       spawn 支持 .cjs 脚本 provider（ELECTRON_RUN_AS_NODE 降级 node 模式）
++const { execSync } = require('child_process');
++const fs = require('fs');
++const path = require('path');
++
++const resourcesDir = process.argv[2];
++if (!resourcesDir || !fs.existsSync(path.join(resourcesDir, 'app.asar'))) {
++  console.error('用法: node patch-app-asar.cjs <含 app.asar 的 resources 目录>');
++  process.exit(2);
++}
++const appDir = path.join(resourcesDir, 'app');
++const asarPath = path.join(resourcesDir, 'app.asar');
++const asarBak = asarPath + '.bak';
++
++if (fs.existsSync(appDir)) {
++  console.log('app 目录已存在，跳过解包');
++} else {
++  const npx = process.platform === 'win32' ? 'npx.cmd' : 'npx';
++  console.log('extracting app.asar ...');
++  execSync(`${npx} --yes @electron/asar extract "${asarPath}" "${appDir}"`, { stdio: 'inherit' });
++  fs.renameSync(asarPath, asarBak);
++  console.log('asar renamed to app.asar.bak');
++}
++
++const mainJs = path.join(appDir, 'dist-electron', 'main.js');
++let src = fs.readFileSync(mainJs, 'utf8');
++const orig = '(0,a.spawn)(r,[],{stdio:[`pipe`,`pipe`,`pipe`],windowsHide:!0})';
++const fixed = "(0,a.spawn)(/\\.cjs$/i.test(r)?process.execPath:r,/\\.cjs$/i.test(r)?[r]:[],{stdio:[`pipe`,`pipe`,`pipe`],windowsHide:!0,...(/\\.cjs$/i.test(r)?{env:{...process.env,ELECTRON_RUN_AS_NODE:`1`}}:{})})";
++if (src.includes(fixed)) {
++  console.log('main.js already patched');
++} else if (src.includes(orig)) {
++  src = src.split(orig).join(fixed);
++  fs.writeFileSync(mainJs, src);
++  console.log('main.js PATCHED (keyProvider .cjs + ELECTRON_RUN_AS_NODE)');
++} else {
++  console.error('ORIG spawn pattern NOT FOUND — 产物代码可能已变化，需人工检查');
++  process.exit(1);
++}
++console.log('DONE:', resourcesDir);
+diff --git a/patches/patch-native-error-log.cjs b/patches/patch-native-error-log.cjs
+new file mode 100644
+index 0000000..f0f3dd3
+--- /dev/null
++++ b/patches/patch-native-error-log.cjs
+@@ -0,0 +1,16 @@
++// patch-native-error-log.cjs: nativeImageDecrypt 的 addon 加载失败记录真实错误
++const fs = require('fs');
++const p = __dirname + '/weflow-src-upstream/electron/services/nativeImageDecrypt.ts';
++let src = fs.readFileSync(p, 'utf8').replace(/\r\n/g, '\n');
++const old = `    } catch {
++      // try next candidate
++    }`;
++const neu = `    } catch (e) {
++      // try next candidate（记录真实加载错误，便于定位 ABI/依赖问题）
++      console.error('[nativeImageDecrypt] addon require failed:', candidate, String(e).slice(0, 300))
++    }`;
++if (src.includes(neu)) { console.log('already patched'); process.exit(0); }
++if (!src.includes(old)) { console.log('OLD NOT FOUND'); process.exit(1); }
++src = src.split(old).join(neu);
++fs.writeFileSync(p, src);
++console.log('NATIVE ERROR LOG ADDED');
+diff --git a/patches/patch_wcdb.ps1 b/patches/patch_wcdb.ps1
+new file mode 100644
+index 0000000..ec70ecd
+--- /dev/null
++++ b/patches/patch_wcdb.ps1
+@@ -0,0 +1,288 @@
++<#
++    WeFlow wcdb_api.dll date-limit patch
++
++    Removes the two hard-coded expiry gates inside wcdb_api.dll that make every
++    database call fail with -101 / -1000 / -1005 / -1006 after the built-in
++    deadline (2026-09-30 23:59:59 for WeFlow 5.0.0).
++
++    No path is hard-coded anywhere. The WeFlow installation is located by
++    -AppDir, then $env:WEFLOW_DIR, then by walking up from this script, then by
++    the uninstall entry in the registry, then by the usual install folders.
++
++    Modes
++        (default)        apply the patch
++        -Check           report status only, never write
++        -Restore         put the saved original DLL back
++        -AppDir <dir>    use this WeFlow installation (the folder with WeFlow.exe)
++
++    Examples
++        powershell -ExecutionPolicy Bypass -File patch_wcdb.ps1
++        powershell -ExecutionPolicy Bypass -File patch_wcdb.ps1 -Check
++        powershell -ExecutionPolicy Bypass -File patch_wcdb.ps1 -Restore
++
++    Exit codes
++        0  success
++        2  WeFlow installation or wcdb_api.dll not found
++        3  WeFlow is running, the DLL is locked
++        4  only one of the two gates matched, refusing to write
++        5  verification after write failed
++        6  no write permission (try running as administrator)
++#>
++[CmdletBinding()]
++param(
++    [string]$AppDir,
++    [switch]$Restore,
++    [switch]$Check
++)
++
++$ErrorActionPreference = 'Stop'
++
++$script:WeFlowExe = 'WeFlow.exe'
++
++function Find-AppDir {
++    param([string]$Hint)
++
++    if ($Hint) {
++        if (-not (Test-Path -LiteralPath $Hint -PathType Container)) { return $null }
++        return (Resolve-Path -LiteralPath $Hint).Path
++    }
++
++    if ($env:WEFLOW_DIR -and (Test-Path -LiteralPath (Join-Path $env:WEFLOW_DIR $script:WeFlowExe))) {
++        return (Resolve-Path -LiteralPath $env:WEFLOW_DIR).Path
++    }
++
++    # 1. this script may live inside (or next to) the installation
++    $candidates = New-Object System.Collections.Generic.List[string]
++    $dir = Get-Item -LiteralPath $PSScriptRoot
++    for ($i = 0; $i -lt 4 -and $dir; $i++) {
++        $candidates.Add($dir.FullName)
++        $dir = $dir.Parent
++    }
++
++    # 2. the uninstall entry written by the installer
++    $uninstallKeys = @(
++        'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
++        'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
++        'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
++    )
++    foreach ($key in $uninstallKeys) {
++        $entries = Get-ItemProperty -Path $key -ErrorAction SilentlyContinue |
++            Where-Object { $_.DisplayName -like 'WeFlow*' }
++        foreach ($entry in $entries) {
++            if ($entry.InstallLocation) { $candidates.Add($entry.InstallLocation) }
++            if ($entry.UninstallString) {
++                $exe = $entry.UninstallString -replace '^"', '' -replace '".*$', '' -replace '\s+/\S+$', ''
++                if ($exe) { $candidates.Add((Split-Path -Parent $exe)) }
++            }
++        }
++    }
++
++    # 3. the usual per-user and per-machine locations
++    foreach ($base in @($env:LOCALAPPDATA, $env:ProgramFiles, ${env:ProgramFiles(x86)})) {
++        if ($base) { $candidates.Add((Join-Path $base 'Programs\WeFlow')); $candidates.Add((Join-Path $base 'WeFlow')) }
++    }
++
++    foreach ($c in $candidates) {
++        if ($c -and (Test-Path -LiteralPath (Join-Path $c $script:WeFlowExe))) {
++            return (Resolve-Path -LiteralPath $c).Path
++        }
++    }
++    return $null
++}
++
++function Find-All {
++    param([byte[]]$Hay, [byte[]]$Needle)
++
++    $hits = New-Object System.Collections.Generic.List[int]
++    $n = $Needle.Length
++    $limit = $Hay.Length - $n
++    for ($i = 0; $i -le $limit; $i++) {
++        if ($Hay[$i] -ne $Needle[0]) { continue }
++        $ok = $true
++        for ($j = 1; $j -lt $n; $j++) {
++            if ($Hay[$i + $j] -ne $Needle[$j]) { $ok = $false; break }
++        }
++        if ($ok) { $hits.Add($i) }
++    }
++    return $hits
++}
++
++# Gate 1, inside InitProtection: call <import>(FF 15 rel32) ; 48 3D <imm32 epoch> ; 7E 0A
++function Patch-A {
++    param([byte[]]$Data)
++
++    $found = @()
++    foreach ($i in (Find-All -Hay $Data -Needle ([byte[]](0x48, 0x3D)))) {
++        if ($i -lt 6) { continue }
++        if ($Data[$i - 6] -ne 0xFF -or $Data[$i - 5] -ne 0x15) { continue }
++        $imm = [BitConverter]::ToUInt32($Data, $i + 2)
++        if ($imm -lt 1400000000 -or $imm -gt 2200000000) { continue }
++        if ($Data[$i + 6] -eq 0x7E -or $Data[$i + 6] -eq 0xEB) {
++            $found += [pscustomobject]@{ Off = $i; Imm = $imm }
++        }
++    }
++    if ($found.Count -ne 1) {
++        return @{ Status = 'nomatch'; Off = -1; Info = "InitProtection gate: $($found.Count) matches" }
++    }
++    $hit = $found[0]
++    if ($Data[$hit.Off + 6] -eq 0xEB) {
++        return @{ Status = 'already'; Off = $hit.Off; Info = 'InitProtection gate already patched' }
++    }
++    if ($script:CheckOnly) {
++        return @{ Status = 'needed'; Off = $hit.Off; Info = 'InitProtection gate present, not patched' }
++    }
++    $Data[$hit.Off + 6] = 0xEB
++    $when = [DateTimeOffset]::FromUnixTimeSeconds($hit.Imm).UtcDateTime.ToString('yyyy-MM-dd HH:mm:ss') + 'Z'
++    return @{ Status = 'patched'; Off = $hit.Off; Info = "InitProtection gate removed (hard-coded expiry was $when)" }
++}
++
++# Gate 2, inside wcdb_init: call <import>(FF 15 rel32) ; 48 3B C3 ; 0F 8E <rel32>
++function Patch-B {
++    param([byte[]]$Data)
++
++    $found = @()
++    foreach ($i in (Find-All -Hay $Data -Needle ([byte[]](0x48, 0x3B, 0xC3)))) {
++        if ($i -lt 6) { continue }
++        if ($Data[$i - 6] -ne 0xFF -or $Data[$i - 5] -ne 0x15) { continue }
++        $unpatched = ($Data[$i + 3] -eq 0x0F -and $Data[$i + 4] -eq 0x8E)
++        $patched = ($Data[$i + 3] -eq 0xE9)
++        if ($unpatched -or $patched) { $found += $i }
++    }
++    if ($found.Count -ne 1) {
++        return @{ Status = 'nomatch'; Off = -1; Info = "wcdb_init gate: $($found.Count) matches" }
++    }
++    $off = $found[0]
++    if ($Data[$off + 3] -eq 0xE9) {
++        return @{ Status = 'already'; Off = $off; Info = 'wcdb_init gate already patched' }
++    }
++    if ($script:CheckOnly) {
++        return @{ Status = 'needed'; Off = $off; Info = 'wcdb_init gate present, not patched' }
++    }
++    $rel = [BitConverter]::ToInt32($Data, $off + 5)
++    $new = [byte[]](0xE9) + [BitConverter]::GetBytes([int32]($rel + 1)) + [byte[]](0x90)
++    [Array]::Copy($new, 0, $Data, $off + 3, 6)
++    return @{ Status = 'patched'; Off = $off; Info = 'wcdb_init gate removed' }
++}
++
++function Get-Hash([string]$Path) {
++    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.Substring(0, 16).ToLower()
++}
++
++$script:CheckOnly = $Check.IsPresent
++
++$resolved = Find-AppDir -Hint $AppDir
++if (-not $resolved) {
++    Write-Host 'ERROR: WeFlow installation not found.' -ForegroundColor Red
++    Write-Host '       Point at it explicitly with -AppDir "<folder containing WeFlow.exe>".'
++    exit 2
++}
++$AppDir = $resolved
++
++if (-not $script:CheckOnly -and (Get-Process -Name ([System.IO.Path]::GetFileNameWithoutExtension($script:WeFlowExe)) -ErrorAction SilentlyContinue)) {
++    Write-Host 'ERROR: WeFlow is running. Close it first, the DLL file is locked.' -ForegroundColor Red
++    exit 3
++}
++
++Write-Host "WeFlow directory: $AppDir"
++if ($script:CheckOnly) { Write-Host 'Mode: check only, nothing will be written' }
++if ($Restore) { Write-Host 'Mode: restore original DLL' }
++
++$targets = @(Get-ChildItem -LiteralPath $AppDir -Recurse -File -Filter 'wcdb_api.dll' -ErrorAction SilentlyContinue)
++if ($targets.Count -eq 0) {
++    Write-Host 'ERROR: no wcdb_api.dll found under the installation directory.' -ForegroundColor Red
++    exit 2
++}
++
++$exitCode = 0
++
++foreach ($file in $targets) {
++    Write-Host ''
++    Write-Host "== $($file.FullName)"
++
++    if ($Restore) {
++        $backup = $file.FullName + '.orig'
++        if (-not (Test-Path -LiteralPath $backup)) {
++            Write-Host "   skipped: no $($file.Name).orig backup next to it" -ForegroundColor DarkGray
++            continue
++        }
++        try {
++            Copy-Item -LiteralPath $backup -Destination $file.FullName -Force
++            Write-Host "   restored from backup, sha256 $((Get-Hash $file.FullName))" -ForegroundColor Green
++        } catch {
++            Write-Host "   ERROR: $($_.Exception.Message)" -ForegroundColor Red
++            Write-Host '   hint: run as administrator if WeFlow is installed under Program Files'
++            $exitCode = 6
++        }
++        continue
++    }
++
++    $data = [System.IO.File]::ReadAllBytes($file.FullName)
++    if ($data.Length -lt 0x100000) {
++        Write-Host '   skipped: not a wcdb_api.dll build we know (too small)'
++        continue
++    }
++
++    $a = Patch-A -Data $data
++    $b = Patch-B -Data $data
++
++    Write-Host "   $($a.Status): $($a.Info)"
++    Write-Host "   $($b.Status): $($b.Info)"
++
++    if ($a.Status -eq 'nomatch' -and $b.Status -eq 'nomatch') {
++        Write-Host '   skipped: no expiry gate in this file (older unprotected build)' -ForegroundColor DarkGray
++        continue
++    }
++    if ($a.Status -eq 'nomatch' -or $b.Status -eq 'nomatch') {
++        Write-Host '   ERROR: only one of the two gates was found. Refusing to write.' -ForegroundColor Red
++        $exitCode = 4
++        continue
++    }
++    if ($a.Status -eq 'needed' -or $b.Status -eq 'needed') {
++        Write-Host '   this file still needs the patch' -ForegroundColor Yellow
++        continue
++    }
++    if ($a.Status -eq 'already' -and $b.Status -eq 'already') {
++        Write-Host '   nothing to do' -ForegroundColor DarkGray
++        continue
++    }
++
++    $before = Get-Hash $file.FullName
++    $backup = $file.FullName + '.orig'
++    if (-not (Test-Path -LiteralPath $backup)) {
++        Copy-Item -LiteralPath $file.FullName -Destination $backup
++        Write-Host "   backup written: $backup (sha256 $before)"
++    }
++
++    try {
++        [System.IO.File]::WriteAllBytes($file.FullName, $data)
++    } catch {
++        Write-Host "   ERROR: $($_.Exception.Message)" -ForegroundColor Red
++        Write-Host '   hint: run as administrator if WeFlow is installed under Program Files'
++        $exitCode = 6
++        continue
++    }
++
++    $reread = [System.IO.File]::ReadAllBytes($file.FullName)
++    $okA = ($a.Status -eq 'already') -or ($reread[$a.Off + 6] -eq 0xEB)
++    $okB = ($b.Status -eq 'already') -or ($reread[$b.Off + 3] -eq 0xE9)
++    if ($okA -and $okB) {
++        Write-Host "   written and verified, sha256 $before -> $((Get-Hash $file.FullName))" -ForegroundColor Green
++    } else {
++        Write-Host '   ERROR: verification after write failed' -ForegroundColor Red
++        $exitCode = 5
++    }
++}
++
++Write-Host ''
++if ($exitCode -ne 0) {
++    Write-Host 'Finished with errors.' -ForegroundColor Red
++    exit $exitCode
++}
++if ($script:CheckOnly) {
++    Write-Host 'Check finished.'
++} elseif ($Restore) {
++    Write-Host 'Restore finished.' -ForegroundColor Green
++} else {
++    Write-Host "Done. Start WeFlow and check that the wcdb log does not contain 'InitProtection rc=-101'." -ForegroundColor Green
++}
++exit 0
+diff --git a/patches/weflow-upstream-latest-fixes.patch b/patches/weflow-upstream-latest-fixes.patch
+new file mode 100644
+index 0000000..55e7a9e
+--- /dev/null
++++ b/patches/weflow-upstream-latest-fixes.patch
+@@ -0,0 +1,225 @@
++diff --git a/electron/exportWorker.ts b/electron/exportWorker.ts
++index 8e74eb7..0baad5f 100644
++--- a/electron/exportWorker.ts
+++++ b/electron/exportWorker.ts
++@@ -310,6 +310,112 @@ const recordNewDirectoryTreeEntries = (before: DirectoryTreeSnapshot) => {
++   }
++ }
++ 
+++const collectWeliveErrorText = (result: any): string => {
+++  const parts = [
+++    result?.error,
+++    result?.stderr,
+++    ...Object.values(result?.failedSessionErrors || {})
+++  ]
+++  return parts
+++    .map((value) => String(value || '').trim())
+++    .filter(Boolean)
+++    .join('\n')
+++}
+++
+++type WeliveFallbackReason = 'build-expired' | 'native-transport' | 'native-crash' | 'engine-missing'
+++
+++const getWeliveFallbackReason = (result: any): WeliveFallbackReason | null => {
+++  if (!result || result.success) return null
+++  const text = collectWeliveErrorText(result)
+++  if (/this build has expired/i.test(text)) return 'build-expired'
+++  if (/native transport challenge failed|server proof mismatch|finish failed with status|finish proof mismatch/i.test(text)) {
+++    return 'native-transport'
+++  }
+++  if (/3221225477|0x?c0000005|-1073741819/i.test(text)) return 'native-crash'
+++  if (/未找到 WeLive 导出引擎|\bENOENT\b/i.test(text)) return 'engine-missing'
+++  return null
+++}
+++
+++const getWeliveFallbackLabel = (reason: WeliveFallbackReason): string => {
+++  if (reason === 'build-expired') return 'WeLive 导出引擎已过期，正在切换兼容导出引擎'
+++  if (reason === 'native-transport') return 'WeLive 导出引擎与当前环境不兼容，正在切换兼容导出引擎'
+++  if (reason === 'engine-missing') return '未找到 WeLive 导出引擎，正在切换兼容导出引擎'
+++  return 'WeLive 导出引擎异常退出，正在切换兼容导出引擎'
+++}
+++
+++async function runLegacyEngine() {
+++  const path = require('path') as typeof import('path')
+++  const { wcdbService } = await import('./services/wcdbService')
+++  const { exportService } = await import('./services/export')
+++
+++  wcdbService.setPaths(String(config.resourcesPath || ''), String(config.userDataPath || ''))
+++  wcdbService.setLibPath(String(config.wcdbLibPath || ''))
+++  wcdbService.setLogEnabled(config.logEnabled === true)
+++  exportService.setRuntimeConfig({
+++    dbPath: config.dbPath,
+++    decryptKey: config.decryptKey,
+++    myAccountId: config.myAccountId,
+++    accountDir: config.accountDir,
+++    imageXorKey: config.imageXorKey,
+++    imageAesKey: config.imageAesKey,
+++    resourcesPath: config.resourcesPath,
+++    appPath: config.resourcesPath ? path.dirname(config.resourcesPath) : __dirname,
+++    isPackaged: config.isPackaged
+++  })
+++
+++  const onProgress = (progress: any) => queueProgress(progress)
+++
+++  const taskControl = config.taskId
+++    ? {
+++        shouldPause: () => controlState.pauseRequested,
+++        shouldStop: () => controlState.stopRequested,
+++        recordCreatedFile: queueCreatedFile,
+++        recordCreatedDir: queueCreatedDir
+++      }
+++    : undefined
+++
+++  let result: any
+++  if (config.mode === 'single') {
+++    const sessionId = String(config.sessionId || '').trim()
+++    const outputPath = String(config.outputPath || '').trim()
+++    const options = config.options || { format: 'chatlab' }
+++    const format = String(options.format || 'chatlab')
+++    if (format === 'json' || format === 'arkme-json') {
+++      result = await exportService.orchestrator.exportSessionToDetailedJson(sessionId, outputPath, options, onProgress, taskControl)
+++    } else if (format === 'excel') {
+++      result = await exportService.orchestrator.exportSessionToExcel(sessionId, outputPath, options, onProgress, taskControl)
+++    } else if (format === 'txt') {
+++      result = await exportService.orchestrator.exportSessionToTxt(sessionId, outputPath, options, onProgress, taskControl)
+++    } else if (format === 'markdown') {
+++      result = await exportService.orchestrator.exportSessionToMarkdown(sessionId, outputPath, options, onProgress, taskControl)
+++    } else if (format === 'weclone') {
+++      result = await exportService.orchestrator.exportSessionToWeCloneCsv(sessionId, outputPath, options, onProgress, taskControl)
+++    } else if (format === 'html') {
+++      result = await exportService.orchestrator.exportSessionToHtml(sessionId, outputPath, options, onProgress, taskControl)
+++    } else if (format === 'sql') {
+++      result = await exportService.orchestrator.exportSessionToSql(sessionId, outputPath, options, onProgress, taskControl)
+++    } else {
+++      result = await exportService.orchestrator.exportSessionToChatLab(sessionId, outputPath, options, onProgress, taskControl)
+++    }
+++  } else {
+++    result = await exportService.exportSessions(
+++      Array.isArray(config.sessionIds) ? config.sessionIds : [],
+++      String(config.outputDir || ''),
+++      config.options || { format: 'json' },
+++      onProgress,
+++      taskControl
+++    )
+++  }
+++
+++  flushProgress()
+++  flushCreatedPaths()
+++
+++  parentPort?.postMessage({
+++    type: 'export:result',
+++    data: result
+++  })
+++}
+++
++ async function runWeliveEngine() {
++   const path = require('path') as typeof import('path')
++   const fs = require('fs') as typeof import('fs')
++@@ -707,12 +813,27 @@ async function run() {
++   }
++ 
++   const result = await runWeliveEngine()
+++  const fallbackReason = getWeliveFallbackReason(result)
+++  if (!fallbackReason) {
+++    flushProgress()
+++    flushCreatedPaths()
+++    parentPort?.postMessage({
+++      type: 'export:result',
+++      data: result
+++    })
+++    return
+++  }
+++
+++  queueProgress({
+++    current: 0,
+++    total: config.mode === 'single' ? 1 : (Array.isArray(config.sessionIds) ? config.sessionIds.length : 1),
+++    phase: 'preparing',
+++    phaseLabel: getWeliveFallbackLabel(fallbackReason)
+++  })
++   flushProgress()
++   flushCreatedPaths()
++-  parentPort?.postMessage({
++-    type: 'export:result',
++-    data: result
++-  })
+++
+++  await runLegacyEngine()
++ }
++ 
++ run().catch((error) => {
++diff --git a/electron/services/imageDecryptService.ts b/electron/services/imageDecryptService.ts
++index 027688d..163b67e 100644
++--- a/electron/services/imageDecryptService.ts
+++++ b/electron/services/imageDecryptService.ts
++@@ -2210,6 +2210,10 @@ export class ImageDecryptService {
++       const encrypted = await readFile(datPath)
++       const directExt = this.detectImageExtension(encrypted)
++       if (directExt) return { data: encrypted, ext: directExt, isWxgf: false }
+++      // WXGF 明文容器（微信 4.0 新格式）直接识别，交给 unwrapWxgf 的 HEVC/ffmpeg 流程
+++      if (encrypted.length > 20 && encrypted[0] === 0x77 && encrypted[1] === 0x78 && encrypted[2] === 0x67 && encrypted[3] === 0x66) {
+++        return { data: encrypted, ext: '', isWxgf: true }
+++      }
++ 
++       const candidates: Buffer[] = []
++       const aesKeyText = String(aesKey || '').trim()
++@@ -2226,6 +2230,10 @@ export class ImageDecryptService {
++       for (const candidate of candidates) {
++         const ext = this.detectImageExtension(candidate)
++         if (ext) return { data: candidate, ext, isWxgf: false }
+++        // WXGF 容器（微信 4.0 新格式）：返回 isWxgf=true，由主流程 unwrapWxgf 走 HEVC/ffmpeg 转换
+++        if (candidate.length > 20 && candidate[0] === 0x77 && candidate[1] === 0x78 && candidate[2] === 0x67 && candidate[3] === 0x66) {
+++          return { data: candidate, ext: '', isWxgf: true }
+++        }
++       }
++     } catch (error) {
++       this.logError('JS DAT 解密 fallback 失败', error, { datPath })
++diff --git a/electron/services/nativeImageDecrypt.ts b/electron/services/nativeImageDecrypt.ts
++index 1299968..3f8fd3a 100644
++--- a/electron/services/nativeImageDecrypt.ts
+++++ b/electron/services/nativeImageDecrypt.ts
++@@ -87,8 +87,9 @@ function loadAddon(): NativeAddon | null {
++         cachedAddon = addon
++         return addon
++       }
++-    } catch {
++-      // try next candidate
+++    } catch (e) {
+++      // try next candidate（记录真实加载错误，便于定位 ABI/依赖问题）
+++      console.error('[nativeImageDecrypt] addon require failed:', candidate, String(e).slice(0, 300))
++     }
++   }
++ 
++diff --git a/package.json b/package.json
++index a53205d..1843900 100644
++--- a/package.json
+++++ b/package.json
++@@ -36,11 +36,13 @@
++     "@heroui/styles": "^3.2.2",
++     "@hicccc77/electron-liquid-glass": "^0.4.0",
++     "@lobehub/icons": "^5.10.1",
+++    "@lobehub/ui": "^5.64.0",
++     "@rc-component/qrcode": "^2.0.0",
++     "@tailwindcss/vite": "^4.3.2",
++     "@vscode/sudo-prompt": "^9.3.2",
++     "ai": "^7.0.22",
++     "ansi-to-react": "^6.1.6",
+++    "antd": "^6.6.6",
++     "class-variance-authority": "^0.7.1",
++     "clsx": "^2.1.1",
++     "cmdk": "^1.1.1",
++@@ -116,7 +118,7 @@
++     "productName": "WeFlow",
++     "artifactName": "${productName}-${version}-Setup.${ext}",
++     "directories": {
++-      "output": "release"
+++      "output": "release2"
++     },
++     "mac": {
++       "target": [
++@@ -243,4 +245,4 @@
++     "tmp": "^0.2.7",
++     "immutable": "^5.1.5"
++   }
++-}
+++}
++\ No newline at end of file
